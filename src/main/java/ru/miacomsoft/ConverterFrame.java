@@ -21,11 +21,10 @@ public class ConverterFrame extends JFrame {
 
     private final JButton convertButton = new JButton("Конвертировать в панораму");
     private final JButton stopButton = new JButton("Остановить");
-
-    // Новый компонент: Прогресс-бар
     private final JProgressBar progressBar = new JProgressBar(0, 100);
 
     private SwingWorker<Void, String> currentWorker;
+    private DirectoryConverter activeConverter; // Ссылка на текущий конвертер
 
     public ConverterFrame() {
         super("MiSphere Converter (360 -> Панорама)");
@@ -35,13 +34,11 @@ public class ConverterFrame extends JFrame {
         setLayout(new BorderLayout(10, 10));
         ((JComponent) getContentPane()).setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        // ----- Верхняя панель (выбор путей и кнопки) -----
         JPanel top = new JPanel(new GridBagLayout());
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(3, 3, 3, 3);
         c.fill = GridBagConstraints.HORIZONTAL;
 
-        // Строка 1: Исходный каталог
         c.gridx = 0; c.gridy = 0; c.weightx = 0;
         top.add(new JLabel("Исходный каталог:"), c);
         c.gridx = 1; c.weightx = 1;
@@ -51,7 +48,6 @@ public class ConverterFrame extends JFrame {
         srcBtn.addActionListener(e -> chooseFolder(sourceField));
         top.add(srcBtn, c);
 
-        // Строка 2: Результирующий каталог
         c.gridx = 0; c.gridy = 1; c.weightx = 0;
         top.add(new JLabel("Результат:"), c);
         c.gridx = 1; c.weightx = 1;
@@ -61,32 +57,27 @@ public class ConverterFrame extends JFrame {
         tgtBtn.addActionListener(e -> chooseFolder(targetField));
         top.add(tgtBtn, c);
 
-        // Строка 3: Кнопки управления
         c.gridx = 0; c.gridy = 2; c.gridwidth = 3; c.weightx = 1;
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
         buttonPanel.add(convertButton);
         buttonPanel.add(stopButton);
         top.add(buttonPanel, c);
 
-        // Строка 4: Прогресс-бар на всю ширину
         c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1;
-        c.insets = new Insets(10, 3, 3, 3); // Чуть больше отступа сверху
-        progressBar.setStringPainted(true); // Отображать проценты
+        c.insets = new Insets(10, 3, 3, 3);
+        progressBar.setStringPainted(true);
         progressBar.setValue(0);
         progressBar.setString("0%");
         top.add(progressBar, c);
 
         add(top, BorderLayout.NORTH);
 
-        // ----- Лог (центр) -----
         logArea.setEditable(false);
         logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         add(new JScrollPane(logArea), BorderLayout.CENTER);
 
-        // Восстанавливаем последние настройки
         sourceField.setText(prefs.get(PREF_SOURCE, ""));
         targetField.setText(prefs.get(PREF_TARGET, ""));
-
         stopButton.setEnabled(false);
 
         convertButton.addActionListener(e -> runConversion());
@@ -135,12 +126,9 @@ public class ConverterFrame extends JFrame {
         }
 
         savePreferences();
-
         convertButton.setEnabled(false);
         stopButton.setEnabled(true);
         logArea.setText("");
-
-        // Сброс прогресс-бара перед стартом
         progressBar.setValue(0);
         progressBar.setString("0%");
 
@@ -150,17 +138,16 @@ public class ConverterFrame extends JFrame {
         currentWorker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() {
-                // Передаем колбэк this::setProgress для обновления прогресса SwingWorker
-                DirectoryConverter converter = new DirectoryConverter(
+                // Передаем колбэки и создаем конвертер
+                activeConverter = new DirectoryConverter(
                         new FisheyeConverter(),
                         this::publish,
                         this::setProgress
                 );
                 try {
-                    converter.convert(sourcePath, targetPath);
+                    activeConverter.convert(sourcePath, targetPath);
                 } catch (Exception ex) {
                     publish("КРИТИЧЕСКАЯ ОШИБКА: " + ex.getMessage());
-                    ex.printStackTrace();
                 }
                 return null;
             }
@@ -177,21 +164,19 @@ public class ConverterFrame extends JFrame {
             protected void done() {
                 convertButton.setEnabled(true);
                 stopButton.setEnabled(false);
+                activeConverter = null;
 
                 if (isCancelled()) {
                     logArea.append("=== Процесс остановлен ===" + System.lineSeparator());
                     progressBar.setString("Остановлено");
                 } else {
                     logArea.append("=== Обработка завершена ===" + System.lineSeparator());
-                    // Убедимся, что бар показывает 100%, если всё прошло успешно
                     progressBar.setValue(100);
                     progressBar.setString("100%");
                 }
-                currentWorker = null;
             }
         };
 
-        // Слушатель, который перехватывает изменения прогресса от SwingWorker и обновляет UI
         currentWorker.addPropertyChangeListener(evt -> {
             if ("progress".equals(evt.getPropertyName())) {
                 int progress = (Integer) evt.getNewValue();
@@ -204,9 +189,11 @@ public class ConverterFrame extends JFrame {
     }
 
     private void stopConversion() {
+        if (activeConverter != null) {
+            activeConverter.cancel(); // Мягкая остановка конвертера
+        }
         if (currentWorker != null && !currentWorker.isDone()) {
-            currentWorker.cancel(true);
-            logArea.append(">>> Отправлен сигнал остановки..." + System.lineSeparator());
+            currentWorker.cancel(true); // Принудительное прерывание SwingWorker
             stopButton.setEnabled(false);
         }
     }

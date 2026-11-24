@@ -2,7 +2,6 @@ package ru.miacomsoft;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,6 +13,13 @@ public class DefaultFileConverter implements FileConverter {
 
     private static final Set<String> IMAGE_EXT = Set.of(
             "jpg", "jpeg", "png", "bmp", "gif", "tif", "tiff");
+
+    @Override
+    public boolean isConvertible(Path source) throws IOException {
+        // Этот конвертер "по умолчанию" обрабатывает любые файлы,
+        // поэтому для него все файлы подходят.
+        return true;
+    }
 
     @Override
     public void convert(Path source, Path target) throws IOException {
