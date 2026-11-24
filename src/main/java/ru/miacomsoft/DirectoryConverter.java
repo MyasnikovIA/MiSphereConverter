@@ -15,14 +15,19 @@ public class DirectoryConverter {
     private final FileConverter fileConverter;
     private final Consumer<String> log;
     private final Consumer<Integer> progressCallback;
+    private final boolean checkBeforeConvert;
+    private final String outputPrefix;
 
-    // Флаг для безопасной остановки многопоточного процесса
     private final AtomicBoolean isCancelled = new AtomicBoolean(false);
 
-    public DirectoryConverter(FileConverter fileConverter, Consumer<String> log, Consumer<Integer> progressCallback) {
+    public DirectoryConverter(FileConverter fileConverter, Consumer<String> log,
+                              Consumer<Integer> progressCallback, boolean checkBeforeConvert,
+                              String outputPrefix) {
         this.fileConverter = fileConverter;
         this.log = log;
         this.progressCallback = progressCallback;
+        this.checkBeforeConvert = checkBeforeConvert;
+        this.outputPrefix = outputPrefix != null ? outputPrefix : "";
     }
 
     public void cancel() {
@@ -37,11 +42,17 @@ public class DirectoryConverter {
 
         log.accept("Источник:  " + sourceDir.toAbsolutePath());
         log.accept("Результат: " + targetDir.toAbsolutePath());
+        log.accept("Предварительная проверка файлов: " + (checkBeforeConvert ? "ВКЛЮЧЕНА" : "ОТКЛЮЧЕНА"));
+        if (!outputPrefix.isEmpty()) {
+            log.accept("Префикс результирующих файлов: " + outputPrefix);
+        }
 
         List<Path> fileList = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(sourceDir)) {
             walk.filter(Files::isRegularFile)
                     .filter(p -> p.toString().toLowerCase().matches(".*\\.(png|jpg|jpeg)$"))
+                    // Пропускаем файлы, которые уже имеют наш префикс (если сохраняем в ту же папку)
+                    .filter(p -> outputPrefix.isEmpty() || !p.getFileName().toString().startsWith(outputPrefix))
                     .forEach(fileList::add);
         }
 
@@ -57,20 +68,29 @@ public class DirectoryConverter {
         AtomicInteger skipCount = new AtomicInteger(0);
         AtomicInteger processedCount = new AtomicInteger(0);
 
-        // Используем parallelStream() для многопоточной обработки (задействует все ядра CPU)
         fileList.parallelStream().forEach(src -> {
             if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
-                return; // Пропускаем файл, если нажата остановка
+                return;
             }
 
             Path rel = sourceDir.relativize(src);
             Path dst = targetDir.resolve(rel);
 
+            // Применяем префикс к имени файла, если он задан
+            if (!outputPrefix.isEmpty()) {
+                dst = dst.resolveSibling(outputPrefix + dst.getFileName().toString());
+            }
+
             String dstStr = dst.toString();
             dst = Path.of(dstStr.substring(0, dstStr.lastIndexOf('.')) + ".jpg");
 
             try {
-                if (!fileConverter.isConvertible(src)) {
+                boolean shouldConvert = true;
+                if (checkBeforeConvert) {
+                    shouldConvert = fileConverter.isConvertible(src);
+                }
+
+                if (!shouldConvert) {
                     skipCount.incrementAndGet();
                     synchronized (log) { log.accept("[SKIP] " + rel + " (не рыбий глаз или уже панорама)"); }
                 } else {
@@ -87,7 +107,6 @@ public class DirectoryConverter {
                 synchronized (log) { log.accept("[FAIL] " + rel + " : " + ex.getMessage()); }
             }
 
-            // Обновление прогресса
             int current = processedCount.incrementAndGet();
             if (progressCallback != null) {
                 int percent = (int) (((double) current / totalFiles) * 100);

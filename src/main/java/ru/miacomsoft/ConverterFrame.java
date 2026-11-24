@@ -13,6 +13,7 @@ public class ConverterFrame extends JFrame {
 
     private static final String PREF_SOURCE = "sourceDir";
     private static final String PREF_TARGET = "targetDir";
+    private static final String PREF_SKIP_CHECK = "skipCheck";
 
     private final Preferences prefs;
     private final JTextField sourceField = new JTextField(30);
@@ -23,8 +24,10 @@ public class ConverterFrame extends JFrame {
     private final JButton stopButton = new JButton("Остановить");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
 
+    private final JCheckBox skipCheckBox = new JCheckBox("Пропускать проверку формата (ускоряет работу)");
+
     private SwingWorker<Void, String> currentWorker;
-    private DirectoryConverter activeConverter; // Ссылка на текущий конвертер
+    private DirectoryConverter activeConverter;
 
     public ConverterFrame() {
         super("MiSphere Converter (360 -> Панорама)");
@@ -58,10 +61,11 @@ public class ConverterFrame extends JFrame {
         top.add(tgtBtn, c);
 
         c.gridx = 0; c.gridy = 2; c.gridwidth = 3; c.weightx = 1;
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
-        buttonPanel.add(convertButton);
-        buttonPanel.add(stopButton);
-        top.add(buttonPanel, c);
+        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 0));
+        controlPanel.add(convertButton);
+        controlPanel.add(stopButton);
+        controlPanel.add(skipCheckBox);
+        top.add(controlPanel, c);
 
         c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1;
         c.insets = new Insets(10, 3, 3, 3);
@@ -78,6 +82,8 @@ public class ConverterFrame extends JFrame {
 
         sourceField.setText(prefs.get(PREF_SOURCE, ""));
         targetField.setText(prefs.get(PREF_TARGET, ""));
+        skipCheckBox.setSelected(prefs.getBoolean(PREF_SKIP_CHECK, false));
+
         stopButton.setEnabled(false);
 
         convertButton.addActionListener(e -> runConversion());
@@ -90,13 +96,14 @@ public class ConverterFrame extends JFrame {
             }
         });
 
-        setSize(850, 620);
+        setSize(850, 640);
         setLocationRelativeTo(null);
     }
 
     private void savePreferences() {
         prefs.put(PREF_SOURCE, sourceField.getText().trim());
         prefs.put(PREF_TARGET, targetField.getText().trim());
+        prefs.putBoolean(PREF_SKIP_CHECK, skipCheckBox.isSelected());
     }
 
     private void chooseFolder(JTextField target) {
@@ -134,15 +141,18 @@ public class ConverterFrame extends JFrame {
 
         final Path sourcePath = Path.of(src);
         final Path targetPath = Path.of(tgt);
+        final boolean checkFiles = !skipCheckBox.isSelected();
 
         currentWorker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() {
-                // Передаем колбэки и создаем конвертер
+                // В GUI префикс не нужен, так как папки разные
                 activeConverter = new DirectoryConverter(
                         new FisheyeConverter(),
                         this::publish,
-                        this::setProgress
+                        this::setProgress,
+                        checkFiles,
+                        "" // ПУСТОЙ ПРЕФИКС
                 );
                 try {
                     activeConverter.convert(sourcePath, targetPath);
@@ -190,10 +200,10 @@ public class ConverterFrame extends JFrame {
 
     private void stopConversion() {
         if (activeConverter != null) {
-            activeConverter.cancel(); // Мягкая остановка конвертера
+            activeConverter.cancel();
         }
         if (currentWorker != null && !currentWorker.isDone()) {
-            currentWorker.cancel(true); // Принудительное прерывание SwingWorker
+            currentWorker.cancel(true);
             stopButton.setEnabled(false);
         }
     }

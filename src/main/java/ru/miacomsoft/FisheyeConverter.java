@@ -6,9 +6,10 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
-public class FisheyeConverter implements FileConverter {
+public class FisheyeConverter implements FileConverter, BinaryConverter {
 
     static {
         OpenCV.loadLocally();
@@ -22,19 +23,90 @@ public class FisheyeConverter implements FileConverter {
     private Mat map_x_L, map_y_L, map_x_R, map_y_R;
     private Mat mask3, invMask3;
 
+    // ==========================================
+    // РЕАЛИЗАЦИЯ FILE CONVERTER (Работа с файлами)
+    // ==========================================
+
     @Override
     public boolean isConvertible(Path source) throws IOException {
         Mat src = Imgcodecs.imread(source.toString());
         if (src.empty()) return false;
+        boolean result = isConvertibleMat(src);
+        src.release();
+        return result;
+    }
 
+    @Override
+    public void convert(Path source, Path target) throws IOException {
+        Mat src = Imgcodecs.imread(source.toString());
+        if (src.empty()) throw new IOException("Не удалось прочитать: " + source);
+
+        Mat dst = processImage(src);
+
+        // Убедимся, что папка существует
+        if (target.getParent() != null) {
+            Files.createDirectories(target.getParent());
+        }
+
+        String outPath = target.toString();
+        if (!outPath.toLowerCase().endsWith(".jpg") && !outPath.toLowerCase().endsWith(".jpeg")) {
+            int dotIndex = outPath.lastIndexOf('.');
+            outPath = (dotIndex > 0 ? outPath.substring(0, dotIndex) : outPath) + ".jpg";
+        }
+
+        MatOfInt params = new MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, 95);
+        Imgcodecs.imwrite(outPath, dst, params);
+
+        src.release();
+        dst.release();
+    }
+
+    // ==========================================
+    // РЕАЛИЗАЦИЯ BINARY CONVERTER (Библиотека)
+    // ==========================================
+
+    @Override
+    public boolean isConvertible(byte[] imageData) {
+        MatOfByte mob = new MatOfByte(imageData);
+        Mat src = Imgcodecs.imdecode(mob, Imgcodecs.IMREAD_COLOR);
+        mob.release();
+        if (src.empty()) return false;
+        boolean result = isConvertibleMat(src);
+        src.release();
+        return result;
+    }
+
+    @Override
+    public byte[] convert(byte[] imageData) throws IOException {
+        MatOfByte mob = new MatOfByte(imageData);
+        Mat src = Imgcodecs.imdecode(mob, Imgcodecs.IMREAD_COLOR);
+        mob.release();
+
+        if (src.empty()) return null;
+
+        Mat dst = processImage(src);
+        src.release();
+
+        MatOfByte outMob = new MatOfByte();
+        MatOfInt params = new MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, 95);
+        Imgcodecs.imencode(".jpg", dst, outMob, params);
+        dst.release();
+
+        byte[] result = outMob.toArray();
+        outMob.release();
+        return result;
+    }
+
+    // ==========================================
+    // ЯДРО ОБРАБОТКИ (Общее для файлов и потоков)
+    // ==========================================
+
+    private boolean isConvertibleMat(Mat src) {
         int W = src.cols();
         int H = src.rows();
 
         double ratio = (double) W / H;
-        if (ratio < 1.8 || ratio > 2.2) {
-            src.release();
-            return false;
-        }
+        if (ratio < 1.8 || ratio > 2.2) return false;
 
         int checkSize = Math.min(W, H) / 10;
         if (checkSize < 10) checkSize = 10;
@@ -46,7 +118,6 @@ public class FisheyeConverter implements FileConverter {
                         getBrightness(src, W - checkSize, H - checkSize, checkSize)
         ) / 4.0;
 
-        src.release();
         return avgCornerBrightness < 20.0;
     }
 
@@ -61,13 +132,9 @@ public class FisheyeConverter implements FileConverter {
         return (mean.val[0] + mean.val[1] + mean.val[2]) / 3.0;
     }
 
-    // Метод генерации карт (вызывается один раз для каждого разрешения)
     private synchronized void generateMaps(int W_out, int H_out) {
-        if (W_out == lastW && H_out == lastH) {
-            return; // Карты уже готовы в памяти
-        }
+        if (W_out == lastW && H_out == lastH) return;
 
-        // Очищаем старые карты, если они были
         if (map_x_L != null) {
             map_x_L.release(); map_y_L.release(); map_x_R.release(); map_y_R.release();
             mask3.release(); invMask3.release();
@@ -85,7 +152,6 @@ public class FisheyeConverter implements FileConverter {
         map_y_R = new Mat(H_out, W_out, CvType.CV_32FC1);
         Mat mask = new Mat(H_out, W_out, CvType.CV_32FC1);
 
-        // Используем одномерные массивы для быстрой записи
         float[] arrXL = new float[W_out * H_out];
         float[] arrYL = new float[W_out * H_out];
         float[] arrXR = new float[W_out * H_out];
@@ -120,35 +186,27 @@ public class FisheyeConverter implements FileConverter {
             }
         }
 
-        // Записываем массивы в матрицы за один вызов (очень быстро)
-        map_x_L.put(0, 0, arrXL);
-        map_y_L.put(0, 0, arrYL);
-        map_x_R.put(0, 0, arrXR);
-        map_y_R.put(0, 0, arrYR);
+        map_x_L.put(0, 0, arrXL); map_y_L.put(0, 0, arrYL);
+        map_x_R.put(0, 0, arrXR); map_y_R.put(0, 0, arrYR);
         mask.put(0, 0, arrMask);
 
         mask3 = new Mat();
         Imgproc.cvtColor(mask, mask3, Imgproc.COLOR_GRAY2BGR);
         invMask3 = new Mat();
         Core.absdiff(mask3, new Scalar(1, 1, 1), invMask3);
-        mask.release(); // Основная маска больше не нужна
+        mask.release();
 
         lastW = W_out;
         lastH = H_out;
     }
 
-    @Override
-    public void convert(Path source, Path target) throws IOException {
-        Mat src = Imgcodecs.imread(source.toString());
-        if (src.empty()) throw new IOException("Не удалось прочитать: " + source);
-
+    private Mat processImage(Mat src) {
         int W = src.cols();
         int H = src.rows();
         int halfW = W / 2;
         int W_out = W;
         int H_out = W / 2;
 
-        // Генерируем (или берем из кэша) карты
         generateMaps(W_out, H_out);
 
         Mat leftImg = new Mat(src, new Rect(0, 0, halfW, H));
@@ -169,17 +227,10 @@ public class FisheyeConverter implements FileConverter {
         Mat dst = new Mat();
         Core.add(blendL, blendR, dst);
 
-        String outPath = target.toString();
-        if (!outPath.toLowerCase().endsWith(".jpg") && !outPath.toLowerCase().endsWith(".jpeg")) {
-            int dotIndex = outPath.lastIndexOf('.');
-            outPath = (dotIndex > 0 ? outPath.substring(0, dotIndex) : outPath) + ".jpg";
-        }
+        leftImg.release(); rightImg.release();
+        dst_L.release(); dst_R.release();
+        blendL.release(); blendR.release();
 
-        MatOfInt params = new MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, 95);
-        Imgcodecs.imwrite(outPath, dst, params);
-
-        // Очистка временных матриц
-        src.release(); leftImg.release(); rightImg.release();
-        dst_L.release(); dst_R.release(); blendL.release(); blendR.release(); dst.release();
+        return dst;
     }
 }
