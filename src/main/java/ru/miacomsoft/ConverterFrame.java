@@ -22,7 +22,9 @@ public class ConverterFrame extends JFrame {
     private final JButton convertButton = new JButton("Конвертировать в панораму");
     private final JButton stopButton = new JButton("Остановить");
 
-    // Ссылка на текущий рабочий поток, чтобы можно было его прервать
+    // Новый компонент: Прогресс-бар
+    private final JProgressBar progressBar = new JProgressBar(0, 100);
+
     private SwingWorker<Void, String> currentWorker;
 
     public ConverterFrame() {
@@ -33,7 +35,7 @@ public class ConverterFrame extends JFrame {
         setLayout(new BorderLayout(10, 10));
         ((JComponent) getContentPane()).setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        // ----- Верхняя панель (выбор путей) -----
+        // ----- Верхняя панель (выбор путей и кнопки) -----
         JPanel top = new JPanel(new GridBagLayout());
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(3, 3, 3, 3);
@@ -66,6 +68,14 @@ public class ConverterFrame extends JFrame {
         buttonPanel.add(stopButton);
         top.add(buttonPanel, c);
 
+        // Строка 4: Прогресс-бар на всю ширину
+        c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1;
+        c.insets = new Insets(10, 3, 3, 3); // Чуть больше отступа сверху
+        progressBar.setStringPainted(true); // Отображать проценты
+        progressBar.setValue(0);
+        progressBar.setString("0%");
+        top.add(progressBar, c);
+
         add(top, BorderLayout.NORTH);
 
         // ----- Лог (центр) -----
@@ -77,14 +87,11 @@ public class ConverterFrame extends JFrame {
         sourceField.setText(prefs.get(PREF_SOURCE, ""));
         targetField.setText(prefs.get(PREF_TARGET, ""));
 
-        // Кнопка остановки изначально неактивна
         stopButton.setEnabled(false);
 
-        // Слушатели кнопок
         convertButton.addActionListener(e -> runConversion());
         stopButton.addActionListener(e -> stopConversion());
 
-        // Сохраняем настройки при закрытии
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
@@ -92,7 +99,7 @@ public class ConverterFrame extends JFrame {
             }
         });
 
-        setSize(850, 600);
+        setSize(850, 620);
         setLocationRelativeTo(null);
     }
 
@@ -129,10 +136,13 @@ public class ConverterFrame extends JFrame {
 
         savePreferences();
 
-        // Блокируем старт, разблокируем стоп
         convertButton.setEnabled(false);
         stopButton.setEnabled(true);
         logArea.setText("");
+
+        // Сброс прогресс-бара перед стартом
+        progressBar.setValue(0);
+        progressBar.setString("0%");
 
         final Path sourcePath = Path.of(src);
         final Path targetPath = Path.of(tgt);
@@ -140,7 +150,12 @@ public class ConverterFrame extends JFrame {
         currentWorker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() {
-                DirectoryConverter converter = new DirectoryConverter(new FisheyeConverter(), this::publish);
+                // Передаем колбэк this::setProgress для обновления прогресса SwingWorker
+                DirectoryConverter converter = new DirectoryConverter(
+                        new FisheyeConverter(),
+                        this::publish,
+                        this::setProgress
+                );
                 try {
                     converter.convert(sourcePath, targetPath);
                 } catch (Exception ex) {
@@ -160,28 +175,39 @@ public class ConverterFrame extends JFrame {
 
             @Override
             protected void done() {
-                // Возвращаем кнопки в исходное состояние
                 convertButton.setEnabled(true);
                 stopButton.setEnabled(false);
 
                 if (isCancelled()) {
                     logArea.append("=== Процесс остановлен ===" + System.lineSeparator());
+                    progressBar.setString("Остановлено");
                 } else {
                     logArea.append("=== Обработка завершена ===" + System.lineSeparator());
+                    // Убедимся, что бар показывает 100%, если всё прошло успешно
+                    progressBar.setValue(100);
+                    progressBar.setString("100%");
                 }
                 currentWorker = null;
             }
         };
+
+        // Слушатель, который перехватывает изменения прогресса от SwingWorker и обновляет UI
+        currentWorker.addPropertyChangeListener(evt -> {
+            if ("progress".equals(evt.getPropertyName())) {
+                int progress = (Integer) evt.getNewValue();
+                progressBar.setValue(progress);
+                progressBar.setString(progress + "%");
+            }
+        });
 
         currentWorker.execute();
     }
 
     private void stopConversion() {
         if (currentWorker != null && !currentWorker.isDone()) {
-            // Вызов cancel(true) отправляет потоку сигнал прерывания (interrupt)
             currentWorker.cancel(true);
             logArea.append(">>> Отправлен сигнал остановки..." + System.lineSeparator());
-            stopButton.setEnabled(false); // Блокируем кнопку, чтобы не спамили
+            stopButton.setEnabled(false);
         }
     }
 }
